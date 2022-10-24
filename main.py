@@ -3,7 +3,7 @@ import pandas as pd
 import json
 import time
 import os.path
-import pdb
+import sys
 
 ETHERSCAN_BASEURL = 'https://etherscan.io/'
 OPTIMISTIC_BASEURL = 'https://optimistic.etherscan.io/'
@@ -230,14 +230,27 @@ def getLabel(label, type='single'):
 
 # Combines all JSON into a single file combinedLabels.json
 def combineAllJson():
-    raise NotImplementedError('Not updated for new directory structure')
+    combinedJSONAllChains = {}
+
+    for chain in CHAIN_MAP.keys():
+        print('Combine files for', chain)
+        combinedJSON = combineAllJsonForChain(chain)
+        combinedJSONAllChains[chain] = combinedJSON
+
+    with open('combined/combinedLabelsAllChains.json', 'w', encoding='utf-8') as f:
+        json.dump(combinedJSONAllChains, f, ensure_ascii=True)
+
+
+def combineAllJsonForChain(chain):
+    # chain is the chain name to stitch JSON files for, e.g. 'arbitrum' or 'ethereum'
     combinedJSON = {}
+    datadir = os.path.join('data', chain)
 
     # iterating over all files
-    for files in os.listdir('./data'):
+    for files in os.listdir(datadir):
         if files.endswith('json'):
             print(files)  # printing file name of desired extension
-            with open('./data/{}'.format(files)) as f:
+            with open(os.path.join(datadir, files)) as f:
                 dictData = json.load(f)
                 for address, nameTag in dictData.items():
                     if address not in combinedJSON:
@@ -246,8 +259,10 @@ def combineAllJson():
         else:
             continue
 
-    with open('combined/combinedLabels.json', 'w', encoding='utf-8') as f:
+    with open('combined/combinedLabels{}.json'.format(chain), 'w', encoding='utf-8') as f:
         json.dump(combinedJSON, f, ensure_ascii=True)
+
+    return combinedJSON
 
 # Retrieves all labels from labelcloud and saves as JSON/CSV
 def getAllLabels():
@@ -284,6 +299,11 @@ with open('config.json', 'r') as f:
 driver = webdriver.Chrome()
 
 chain = input('Enter chain (ethereum/optimism/arbitrum/polygon/gnosis)')
+if chain not in CHAIN_MAP:
+    print('Non-chain option given. Combining JSON files and exiting.')
+    combineAllJson()
+    sys.exit(0)
+
 config['baseurl'] = CHAIN_MAP[chain] # TODO handle bad inputs
 config['chain'] = chain
 config['url_type'] = URL_TYPE_MAP[chain]
