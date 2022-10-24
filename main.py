@@ -47,6 +47,16 @@ MAIN_ONLY_MAP = {
 }
 
 
+# All subcat IDs found from etherscan; determined manually.
+ETHERSCAN_SUBCAT_IDS = [
+    '1', # Main for most labels
+    '0', # Others for most labels
+    '3-0', # Others for some (e.g. 0x)
+    '2', # Legacy for some labels
+    '3', # Others for coinhako and some others
+]
+
+
 
 # Login to etherscan and auto fill login information if available
 def login():
@@ -78,11 +88,11 @@ def getLabel(label, type='single'):
         large, it's fine; all the addresses will still be returned, and the page won't take any longer
         to load.
 
-        The other issue is subcats. Easy, not-totally-robust solution: just get the pages for both
-        subcatid=1 and subcatid=0 because these are the most common. If they return the same
-        addresses, only keep one of them.
-        TODO 10/17, found out that in practice, this is NOT sufficient to get all the important ones
-        (0x does not conform). Not fixing it now, but need to soon.
+        The other issue is subcats. Manually determined that there are 5 subcatid values across the
+        labels we're interested in (see ETHERSCAN_SUBCAT_IDS). By fetching the pages for all 5 of these
+        and removing duplicate tables, we can make sure we get all of the addresses.
+        Also note: in practice, the addresses in the returned tables are unique and they are disjoint
+        between two different tabs for the same label. We assert this when scraping the addresses.
 
         Optimistic is more well-behaved (no tabs from manual inspection, and also order=asc works)
         but the same code should work properly for it.
@@ -102,8 +112,8 @@ def getLabel(label, type='single'):
         )
         size = 7000 # TODO this is a quick and dirty solution, and in the future I'm sure there'll be larger ones
 
-        # 1 is main, 0 is others
-        subcats = [1, 0] if label not in config['main_only_list'] else [1]
+        subcats = ETHERSCAN_SUBCAT_IDS if label not in config['main_only_list'] else [1]
+        # TODO for optimistic, just use one subcat
         subcat_tables = [] # list of tables, one per subcat
         for subcatid in subcats:
             formattedUrl = labelUrl.format(label, subcatid, size)
@@ -115,9 +125,14 @@ def getLabel(label, type='single'):
             # etherscan.io (not the others as far as I can tell) will
             # return multiple tables and the desired one won't be at index 0.
             max_size = 0
-            biggest_index = None
+            biggest_index = 0
             tables = pd.read_html(driver.page_source)
             for i, tab in enumerate(tables):
+                if (tab == 'No matching records found').sum().sum() > 1:
+                    # Indicates that the table contains no useful info
+                    # Need to filter these out because they could be the
+                    # same size as a legit table with only 1 address
+                    continue
                 tabsize = len(tab.index)
                 if tabsize > max_size:
                     max_size = tabsize
@@ -128,24 +143,27 @@ def getLabel(label, type='single'):
             newTableTruncated.fillna('', inplace=True)
             subcat_tables.append(newTableTruncated) 
             print('Subcat', subcatid, 'has', len(newTableTruncated.index), 'addresses')
-        if len(subcat_tables) == 2: # TODO future proof this for more labels?
-            # Invariant: either the tabs Main and Others both exist, and we got two
-            # disjoint sets of addresses; or one (or both) of those tabs is missing,
-            # and we got 2 identical sets of addresses.
-            # Here we check this invariant.
-            table_main, table_others = subcat_tables
-            addresses_main = set(table_main['Address'].tolist())
-            addresses_others = set(table_others['Address'].tolist())
-            disjoint = addresses_main.isdisjoint(addresses_others)
-            identical = addresses_main == addresses_others
-            assert disjoint or identical # They can both be true for the empty set
-            if disjoint:
-                df = pd.concat(subcat_tables)
+
+        assert len(subcat_tables) > 0
+        for i, table in enumerate(subcat_tables):
+            # Invariant: any two tables are either totally disjoint or totally equivalent.
+            # This is because either a given subcatid exists, and it has a unique table, or
+            # it doesn't exist, and it is the same as a previous table
+            #
+            # Also: each table's rows should be unique
+            curr_addresses_list = table['Address'].tolist()
+            curr_addresses_set = set(curr_addresses_list)
+            assert len(curr_addresses_list) == len(curr_addresses_set)
+
+            if i == 0:
+                addresses_set = curr_addresses_set
+                df = table
             else:
-                df = table_main
-        else:
-            assert len(subcat_tables) == 1
-            df = subcat_tables[0]
+                superset = addresses_set.issuperset(curr_addresses_set)
+                disjoint = addresses_set.isdisjoint(curr_addresses_set)
+                assert superset or disjoint # They can both be true for the empty set
+                if disjoint:
+                    df = pd.concat([df, table])
 
         skip = False # Relevant below
         # The values used from this branch are df and skip
